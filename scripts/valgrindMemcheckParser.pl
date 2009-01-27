@@ -1,5 +1,5 @@
 #!/usr/bin/env perl
-# $Id: valgrindMemcheckParser.pl,v 1.7 2008/03/28 18:25:25 gpetrucc Exp $
+# $Id: valgrindMemcheckParser.pl,v 1.6 2008/03/27 22:36:31 gpetrucc Exp $
 # Created: June 2007
 # Author: Giovanni Petrucciani, INFN Pisa
 #
@@ -11,11 +11,11 @@ use Date::Format;
 use Getopt::Long;
 
 my $mstart = qr/^==\d+== (\S.*? bytes) in \S+ blocks are (.*?) in loss (record \S+ of \S+)/;
-my $mstartuni = qr/^==\d+== ()(\S.*uninitiali[sz]ed.*|Invalid (?:read|write).*)()/;
+my $mstartuni = qr/^==\d+== ()(\S.*uninitialized.*)()/;
 my $mstartfree = qr/^==\d+== ()(\S.*free\(\).*)()/;
 my $mtrace = qr/^==\d+== \s+(?:at|by)\s.*?:\s+(.*?)\s\((.*)\)/;
-my $version = undef; #"CMSSW_1_5_0_pre3";
-my @showstoppers = qq();
+my $version = "CMSSW_1_5_0_pre3";
+my @showstoppers = qq(libFWCoreFramework);
 
 my %presets = (
     'trash' => [ '__static_initialization_and_destruction_0', 'G__exec_statement', 'dlopen\@\@GLIBC_2', '_dl_lookup_symbol_x' ],
@@ -35,7 +35,7 @@ GetOptions(
         'rel|release|r=s' => \$version,
         'libs|l=s' => \@libs,
         'trace|t=s' => \@trace,
-        'stopper|showstopper=s'=> \@showstoppers,
+        'stopper|showstopper'=> \@showstoppers,
         'onecolumn|1' => \$onecolumn,
         'all|a' => \$all,
         'preset=s'   => \@presets,
@@ -118,11 +118,11 @@ if (@dump_presets) {
     exit;
 }
 
-#if ($version eq 'nightly') { $version = time2str('%Y-%m-%d',time()); }
+if ($version eq 'nightly') { $version = time2str('%Y-%m-%d',time()); }
 @libs = split(/,/, join(',',@libs));
 @trace = split(/,/, join(',',@trace));
 @presets = split(/,/, join(',',@presets));
-@showstoppers= split(/,/, join(',',@showstoppers,'libFWCoreFramework'));
+@showstoppers= split(/,/, join(',',@showstoppers));
 if (grep($_ eq 'none', @showstoppers)) { @showstoppers = (); }
 my @trace_in  = map (qr($_), grep ( $_ !~ m/^-/, @trace ));
 my @trace_out = map (qr($_), grep ( s/^-//g, @trace ));
@@ -167,10 +167,9 @@ sub realsize {
         return eval($num);
 }
 sub fformat {
-        my $vstring = (defined($version) ? "v=$version;" : "");
         my $func = CGI::escapeHTML($_[0]);
-        $func =~ s!(\b[A-Z]\w\w\w\w+)!<a class='obj' href='http://cmslxr.fnal.gov/lxr/ident?${vstring}i=$1'>$1</a>!g;
-        $func =~ s!::(\w+)\(!::<a class='func' href='http://cmslxr.fnal.gov/lxr/ident?${vstring}i=$1'>$1</a>(!g;
+        $func =~ s!(\b[A-Z]\w\w\w\w+)!<a class='obj' href='http://cmslxr.fnal.gov/lxr/ident?v=$version;i=$1'>$1</a>!g;
+        $func =~ s!::(\w+)\(!::<a class='func' href='http://cmslxr.fnal.gov/lxr/ident?v=$version;i=$1'>$1</a>(!g;
         return $func;
 }
 
