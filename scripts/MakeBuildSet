@@ -1,0 +1,277 @@
+#! /usr/bin/env python
+#pylint: disable-msg=W0403
+"""
+MakeBuildSet - utilizes dependency discovery mechanism for Partial Releases.
+
+1 July 2008   - with -n option (test mode) does not reuse or save cached data
+              - products dependencies are now taken into consideration
+"""
+
+__revision__ = "$Id: MakeBuildSet,v 1.3 2009/07/01 14:49:00 muzaffar Exp $"
+__version__ = "$Revision: 1.3 $"
+
+import os
+import sys
+import getopt
+import re
+
+programPath = os.path.dirname( os.path.realpath(sys.argv[0] ) ) 
+programName = os.path.basename( sys.argv[0] )
+
+packageListInFile     = 0
+dependencyAnalysisDir = ""
+dependencies          = {}
+myTools               = {}
+outputFormats         = ("packages", "tools", "all")
+outputFormat          = "packages"
+packages              = {}
+dropPluginDeps        = 0
+dropAllPluginDeps     = 0
+
+##############################################################
+# Internal utility functions:
+
+def usage():
+    """
+    Prints out usage help
+    """
+    # Require minimum arguments and use options only to
+    # override the defaults
+    print """
+USAGE:
+    """ + programName + """ [OPTIONS] [<package>]+
+OPTIONS:
+   -d dir     - Required: get dependency information from directory dir,
+		There should be at least dependencies.txt and products.txt
+		files exist under this directory
+   -f file    - Optional: read list of packages from file.
+   -h         - Optional: print this help and exit.
+   -v         - Optional: display version number.
+   -p         - Optional: drop plugins dependency too
+   -P         - Optional: drop all plugins even generated from
+                <subsystem>/<package>/src area
+   -o format  - Optional: format = [""" + "|".join(outputFormats) + """]
+                print out formatted output (e.g. only packages,
+		only tools or both) one per line. Default value is packages.
+"""
+
+def usageError ( message, programName) :
+    """
+    usageError:
+      Call it to quit in case of usage error
+    """
+    print "Usage error: ", message, \
+          "\nTry \'" + programName + " -h\' for help"
+    sys.exit ( 2 )
+
+    
+##############################################################
+# Interface functions:
+def readPackageFromFile(pkfile, list):
+    f = open(pkfile)
+    blankLine = re.compile('^\s*(#.*|)$')
+    for line in f.readlines():
+        line = line.strip()
+	if blankLine.match(line):
+	    continue
+	else:
+	    list[line]=1
+    f.close()
+	
+def readProductsInfo(productFile,prodCache):
+    prods=open(productFile)
+    comment= re.compile("^\s*(#.*|)$")
+    parts  = re.compile("^([^:]+):([^:]+):([^:]+):([^:]+)$")
+    for line in prods.readlines():
+        line = line.strip()
+	if comment.match(line):
+	    continue
+	result = parts.match(line)
+	if result:
+	    prodFrom = result.group(1)
+	    typeName = result.group(2)
+	    dirPath  = result.group(3)
+	    prodName = result.group(4)
+	    prodCache[prodName]={}
+	    prodCache[prodName]["from"]=prodFrom
+	    prodCache[prodName]["type"]=typeName
+	    prodCache[prodName]["path"]=dirPath
+    prods.close()
+
+def excludeProductsFrom(prodFrom,prodCache,excludeMaps):
+    for prodName in prodCache.keys():
+        if prodCache[prodName]["from"] == prodFrom:
+	    excludeMaps[prodName]=1
+	    
+def excludeProductsType(typeName,prodCache,excludeMaps):
+    for prodName in prodCache.keys():
+        if prodCache[prodName]["type"] == typeName:
+	    excludeMaps[prodName]=1
+
+def addDependency(p,cache):
+    if cache.has_key(p):
+        return
+    cache[p]=1
+    if dependencies.has_key(p):
+	for d in dependencies[p].keys():
+	    addDependency(d,cache)
+	    
+def readIgnominyDependencyDB(igFile,myTools,dependencies,droppedProducts):
+    inBlock    = 0
+    inPackage  = 0
+    skipProduct = 0
+    pname          = re.compile("^(.*?)_(.*)")
+    beginBlock     = re.compile('^# Direct binary dependencies')
+    endBlock       = re.compile('^############################*')
+    packageEntry   = re.compile('^(\S+)(\s+.+|):')
+    requiresEntry  = re.compile('^\s+(\S+)\s*$')
+    tools          = re.compile('^(tools|System)/(.+)\s*$',re.IGNORECASE)
+    lcgProject     = re.compile('^(CORAL|SEAL|POOL)/.+',re.IGNORECASE)
+    f = open(igFile)
+    for line in f.readlines():
+        if inBlock:
+            if endBlock.match(line):
+                inBlock = 0
+		return
+            else:
+                if inPackage:
+                    result=requiresEntry.match(line)
+                    if result:
+		        if not skipProduct:
+		            requires=result.group(0).strip()
+			    if lcgProject.match(requires):
+			        continue
+			    if pname.match(requires):
+			        continue
+                            res = tools.match (requires)
+			    if res:
+			        requires = res.group(2).lower()
+			        myTools[requires]=1
+			    dependencies[currentPackage][requires]=1
+                    else:
+                        inPackage=0
+                else:
+                    result = packageEntry.match(line)
+                    if result:
+		        inPackage = 1
+		        skipProduct = 0
+		        currentPackage = result.group(1)
+		        if currentPackage == "(UNKNOWN)" or lcgProject.match(currentPackage):
+		            skipProduct = 1
+			    continue
+		        res = tools.match (currentPackage)
+		        if res:
+		            currentPackage = res.group(2).lower()
+			    myTools[currentPackage]=1
+			    skipProduct = 1
+			    continue
+		        prodname=currentPackage.replace("/","")
+		        res = pname.match(currentPackage)
+		        if res:
+		            currentPackage = res.group(1)
+			    prodname = res.group(2)
+		        if droppedProducts.has_key(prodname):
+		            skipProduct = 1
+			    continue
+		        if not dependencies.has_key(currentPackage):
+			    dependencies[currentPackage]={}
+        else:
+            if beginBlock.match(line):
+                inBlock = 1
+    f.close()
+        
+###############################################################
+# Here real action starts:
+
+# Handle options and arguments:
+try:
+    opts, args = getopt.getopt( sys.argv[1:], "hpPvf:d:o:" )
+
+except getopt.error:
+    usageError( sys.exc_info()[1], programName)
+
+# process verbosity options separately before anything else. 
+
+for o, a in opts:
+    if o == "-v":
+        print 'TEST: '+__version__
+        sys.exit()
+    if o == "-h":
+        usage()
+        sys.exit()
+    if o == "-f":
+        packageListInFile = a
+        if not os.path.isfile(a):
+            usageError( "file " + a + " does not exist!", programName)
+    if o == "-o":
+        outputFormat = a
+        if not a in outputFormats:
+            usageError( "unknown output format: " + a + ".", programName)        
+    if o == "-d":
+        if not os.path.isdir(a):
+	    usageError( "directory " + a + " does not exist!", programName)
+        dependencyAnalysisDir = a
+    if o == "-p":
+        dropPluginDeps = 1
+    if o == "-P":
+        dropAllPluginDeps = 1
+	dropPluginDeps = 1
+
+if dependencyAnalysisDir == "":
+     usageError( "missing ignominy analysis directory which should contain at least products.txt and dependencies.txt files.", programName)
+
+for p in args[0:]:
+    packages[p]=1
+
+# Add packages from file: 
+if (packageListInFile):
+    readPackageFromFile(packageListInFile,packages)
+
+if not len(packages.keys()):
+    print """
+ERROR: You should use either '-f <file>' command-line option
+       to provide the list of packages to look for OR provide
+       a <space> separated list of package at the end of command-line
+"""
+    sys.exit(2)
+
+productCache={}
+readProductsInfo(os.path.join(dependencyAnalysisDir, "products.txt"),productCache)
+
+# Exclude All test products
+droppedProducts={}
+excludeProductsFrom("TEST",productCache,droppedProducts)
+
+# Exclude plugins if requested via command-line
+if dropAllPluginDeps:
+    excludeProductsFrom("PLUGINS",productCache,droppedProducts)
+    excludeProductsType("PLUGINS",productCache,droppedProducts)
+elif dropPluginDeps:
+    excludeProductsFrom("PLUGINS",productCache,droppedProducts)
+    
+# Get dependency info:
+readIgnominyDependencyDB(os.path.join(dependencyAnalysisDir,"dependencies.txt"),myTools,dependencies,droppedProducts)
+droppedProducts={}
+
+myPackages={}
+for p in packages.keys():
+    addDependency(p,myPackages)
+    
+# Print output and finish:
+if outputFormat == "packages":
+    pkg = myPackages.keys()
+    pkg.sort()
+    for p in pkg:
+        if not p in myTools:
+            print p
+elif outputFormat == "tools":
+    pkg = myPackages.keys()
+    pkg.sort()
+    for p in pkg:
+        if p in myTools:
+            print p
+else:
+    pkg = myPackages.keys()
+    pkg.sort()
+    for p in pkg:
+        print p
