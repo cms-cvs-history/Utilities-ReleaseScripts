@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/python -u
 """CMS Package Management script. Feedback and Help: mojedasa@cern.ch
 
 This script must be able to run in Python 2.4.
